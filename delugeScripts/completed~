@@ -1,0 +1,124 @@
+#!/usr/bin/python
+
+# Customizable filebot and script options. Lines starting with # are disbled. Remove # to enable them.
+filebotOptions = [
+    '--output /mnt/media/Media',  # where you want to copy/organize you're files i.e: X:/path/to/media
+    '--action copy',  # rename action i.e: move | copy | keeplink | symlink | hardlink
+    '--conflict override',  # conflict resolution i.e: override | skip | fail
+    '--def subtitles=true',  # download subtitles i.e: true | false
+    '--def artwork=true',  # fetch artwork/nfo i.e: true | false
+    # '--def xbmc=hostname',  # Tell the given XBMC instance to rescan it's library
+    # '--def plex=hostname',  # Tell the given Plex instance to rescan it's library
+    # '--def gmail=username:password',  # Use the following gmail account to send reports
+    # '--def mailto=email',  # Send report to the given email address (email from and to the same account if mailto is not set)
+]
+scriptOptions = {
+    'whitelist': ['Movies', 'TVShows'],  # only process torrents with this labels. Leave empty [] if you want to process every torrent
+    'growlNotifications': False,  # to enable growl notifications set this to True and install gntp using pip:  sudo pip install gntp
+    'growlHostname': '',  # address of the machine where you have growl installed
+    'growlPassword': ''  # the password you have set in growl preferences after enabling network notifications
+}
+
+import sys
+import subprocess
+import logging
+from os import path
+from deluge.ui.client import client
+from twisted.internet import reactor
+
+
+if sys.argv[1] == 'test':
+    logging.basicConfig(level=logging.INFO)
+else:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', filename=path.abspath(sys.argv[0]).replace('.py', '.log'))
+
+
+# register with growl
+if scriptOptions['growlNotifications']:
+    logging.debug('Registering with growl')
+    import gntp.notifier
+    growl = gntp.notifier.GrowlNotifier(
+        applicationName="DelugeGrowl",
+        notifications=["New Messages"],
+        defaultNotifications=["New Messages"],
+        hostname=scriptOptions['growlHostname'],  # Defaults to localhost
+        password=scriptOptions['growlPassword']  # Defaults to a blank password
+    )
+    growl.register()
+
+
+def notify(title, description, sticky, icon="/filebot.png"):
+    logging.debug('Growl Notification: %s' % title)
+    if scriptOptions['growlNotifications']:
+        logging.debug('Growl Notification: %s' % title)
+        growl.notify(
+            noteType="New Messages",
+            title=title,
+            description=description,
+            icon=file(path.dirname(path.abspath(sys.argv[0])) + icon).read(),            sticky=sticky,
+            priority=0,
+        )
+
+
+# get label from deluge
+def on_connect_success(result):
+    logging.debug('Connected to Deluge')
+    return client.core.get_torrent_status(sys.argv[1], ["label"]).addCallback(on_get_torrent_status)
+
+
+def on_connect_fail(result):
+    logging.error("Connection failed: %s" % result)
+
+
+def on_get_torrent_status(torrent):
+
+    # Don't process with filebot if in label blacklist
+    if torrent["label"] not in scriptOptions['whitelist']:
+        logging.info("Not a movie or tv show, nothing to do here.")
+    else:
+        call_filebot()
+
+    return disconnect()
+
+
+# call filebot
+def call_filebot():
+    logging.info("Starting filebot")
+    notify("Cataloging", sys.argv[2], False)
+
+    errorCode = subprocess.call("filebot -script fn:utorrent-postprocess -non-strict --def ut_kind=multi --def 'ut_dir=%s/%s' " % (sys.argv[3], sys.argv[2]) + ' '.join(filebotOptions), shell=True)
+
+    if errorCode == 0:
+        logging.info("Filebot finished with success")
+        notify("Ready to consume", sys.argv[2], False)
+        return True
+    else:
+        logging.error("Something happened")
+        notify("Problems with filebot", sys.argv[2], False)
+        return False
+
+
+# close deluge connection
+def disconnect(result=0):
+    logging.debug("Disconnecting from Deluge")
+    print "disconnect"
+    return client.disconnect().addCallback(stop_reactor)
+
+
+def stop_reactor(result=0):
+    logging.debug("Stoping reactor")
+    print "stop reactor"
+    return reactor.stop()
+
+
+notify("Download complete", sys.argv[2], False, '/deluge.png')
+logging.info("Download complete: %s at %s/%s" % (sys.argv[1], sys.argv[3], sys.argv[2]))
+
+if sys.argv[1] != 'test' and scriptOptions['whitelist']:  # if supplied id is test, just call filebot
+    logging.info("Connecting to deluge")
+    d = client.connect()
+    d.addCallback(on_connect_success)
+    d.addErrback(on_connect_fail)
+    reactor.run()
+else:
+    call_filebot()
